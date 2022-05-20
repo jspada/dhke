@@ -36,6 +36,6 @@ cryptographic primative.
       shared secret: b3dfe7a1b642d02d6a25c236dfc9d8283ba52e756683a8c85efa86eba98c4b3f
 ```
 
-  6) The shared secrets are equivalent
+  6) The shared secrets are equivalent 🎉
 
   7) Bob and Alice give thanks to mathematics for the associative property
