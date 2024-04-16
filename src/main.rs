@@ -4,9 +4,8 @@
 use ark_ec::{AffineCurve, ProjectiveCurve};
 use ark_ff::UniformRand;
 use clap::{Arg, Command};
-use mina_curves::pasta::pallas;
+use mina_curves::pasta::Pallas as CurvePoint;
 use o1_utils::FieldHelpers;
-use pallas::Affine as CurvePoint;
 
 type ScalarField = <CurvePoint as AffineCurve>::ScalarField;
 type BaseField = <CurvePoint as AffineCurve>::BaseField;
