@@ -19,11 +19,15 @@ fn max_b58_len() -> usize {
     (ScalarField::size_in_bytes() as f32 * 8.0 / 58f32.log2()).ceil() as usize
 }
 
+fn compute_pubkey(seckey: ScalarField) -> CurvePoint {
+    CurvePoint::prime_subgroup_generator()
+        .mul(seckey)
+        .into_affine()
+}
+
 fn create_keypair() -> (ScalarField, CurvePoint) {
     let seckey = ScalarField::rand(&mut rand::rngs::OsRng);
-    let pubkey: CurvePoint = CurvePoint::prime_subgroup_generator()
-        .mul(seckey)
-        .into_affine();
+    let pubkey: CurvePoint = compute_pubkey(seckey);
     (seckey, pubkey)
 }
 
@@ -149,6 +153,22 @@ fn main() {
                 "shared secret: {}",
                 format_secret(shared_secret, args.is_present("b58"), len, suffix)
             );
+
+            let shared_pubkey = compute_pubkey(shared_secret);
+
+            if args.is_present("b58") {
+                println!(
+                    "shared pubkey: {}{}",
+                    bs58::encode(shared_pubkey.x.to_bytes()).into_string(),
+                    bs58::encode(shared_pubkey.y.to_bytes()).into_string()
+                );
+            } else {
+                println!(
+                    "shared pubkey: {}{}",
+                    hex::encode(shared_pubkey.x.to_bytes()),
+                    hex::encode(shared_pubkey.y.to_bytes())
+                );
+            }
         }
         Some(&_) => panic!("Invalid mode"),
         None => panic!("Missing mode"),
