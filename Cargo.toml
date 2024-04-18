@@ -8,7 +8,8 @@ edition = "2021"
 [dependencies]
 ark-ec = { version = "0.3.0", features = [ "parallel" ] }
 ark-ff = { version = "0.3.0", features = [ "parallel", "asm" ] }
-clap = "3.1.18"
+bs58 = "0.5.1"
+clap = "3.2.23"
 exitcode = "1.1.2"
 hex = "0.4"
 mina-curves = { git = "https://github.com/o1-labs/proof-systems.git"}
