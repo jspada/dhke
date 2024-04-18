@@ -4,7 +4,7 @@
 use ark_ec::{AffineCurve, ProjectiveCurve};
 use ark_ff::UniformRand;
 use clap::{value_parser, Arg, Command};
-use mina_curves::pasta::pallas::Affine as CurvePoint;
+use mina_curves::pasta::Pallas as CurvePoint;
 use o1_utils::FieldHelpers;
 
 type ScalarField = <CurvePoint as AffineCurve>::ScalarField;
@@ -40,11 +40,11 @@ fn format_secret(shared_secret: ScalarField, b58: bool, len: usize, suffix: &str
         panic!("Maximum length possible is {}", max_len - suffix.len());
     }
 
-    return if b58 {
+    (if b58 {
         bs58::encode(&shared_secret.to_bytes()).into_string()[..len].to_string()
     } else {
         hex::encode(shared_secret.to_bytes())[..len].to_string()
-    } + suffix;
+    } + suffix)
 }
 
 fn main() {
@@ -147,7 +147,7 @@ fn main() {
 
             println!(
                 "shared secret: {}",
-                format_secret(shared_secret, args.is_present("b58"), len, &suffix)
+                format_secret(shared_secret, args.is_present("b58"), len, suffix)
             );
         }
         Some(&_) => panic!("Invalid mode"),
@@ -157,9 +157,8 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use std::ops::Add;
-
     use crate::{create_keypair, create_shared_secret, format_secret};
+    use std::ops::Add;
 
     #[test]
     fn test_ok_shared_secret() {
