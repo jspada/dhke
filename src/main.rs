@@ -36,6 +36,12 @@ fn create_shared_secret(a_seckey: ScalarField, b_pubkey: CurvePoint) -> ScalarFi
     ScalarField::from_bytes(&curve_point.x.to_bytes()).unwrap() // change of field (I promise it's OK)
 }
 
+enum KeyFormat {
+    Hex,
+    B58,
+    Bip39
+}
+
 fn format_secret(shared_secret: ScalarField, b58: bool, len: usize, suffix: &str) -> String {
     assert!(suffix.len() <= 8);
 
@@ -43,6 +49,9 @@ fn format_secret(shared_secret: ScalarField, b58: bool, len: usize, suffix: &str
     if len + suffix.len() > max_len {
         panic!("Maximum length possible is {}", max_len - suffix.len());
     }
+
+    let m = bip39::Mnemonic::from_entropy(&shared_secret.to_bytes()).unwrap();
+    println!("mnemonic: {}", m.to_string());
 
     (if b58 {
         bs58::encode(&shared_secret.to_bytes()).into_string()[..len].to_string()
