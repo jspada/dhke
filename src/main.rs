@@ -39,25 +39,29 @@ fn create_shared_secret(a_seckey: ScalarField, b_pubkey: CurvePoint) -> ScalarFi
 enum KeyFormat {
     Hex,
     B58,
-    Bip39
+    Bip39,
 }
 
-fn format_secret(shared_secret: ScalarField, b58: bool, len: usize, suffix: &str) -> String {
+fn format_secret(shared_secret: ScalarField, out: &str, len: usize, suffix: &str) -> String {
     assert!(suffix.len() <= 8);
 
-    let max_len = if b58 { max_b58_len() } else { max_hex_len() };
+    let max_len = if out == "b58" {
+        max_b58_len()
+    } else {
+        max_hex_len()
+    };
     if len + suffix.len() > max_len {
         panic!("Maximum length possible is {}", max_len - suffix.len());
     }
 
-    let m = bip39::Mnemonic::from_entropy(&shared_secret.to_bytes()).unwrap();
-    println!("mnemonic: {}", m.to_string());
-
-    (if b58 {
-        bs58::encode(&shared_secret.to_bytes()).into_string()[..len].to_string()
-    } else {
-        hex::encode(shared_secret.to_bytes())[..len].to_string()
-    } + suffix)
+    match out {
+        "b58" => bs58::encode(&shared_secret.to_bytes()).into_string()[..len].to_string() + suffix,
+        "hex" => hex::encode(shared_secret.to_bytes())[..len].to_string() + suffix,
+        "bip39" => bip39::Mnemonic::from_entropy(&shared_secret.to_bytes())
+            .unwrap()
+            .to_string(),
+        _ => panic!("invalid output type"),
+    }
 }
 
 fn main() {
@@ -89,12 +93,14 @@ fn main() {
                 .help("Public key"),
         )
         .arg(
-            Arg::new("b58")
-                .short('b')
-                .long("b58")
-                .takes_value(false)
+            Arg::new("out")
+                .short('o')
+                .long("out")
+                .takes_value(true)
                 .required(false)
-                .help("b58 output for shared secret"),
+                .help("b58 output for shared secret")
+                .possible_values(["hex", "b58", "bip39"])
+                .default_value("hex"),
         )
         .arg(
             Arg::new("length")
@@ -103,9 +109,7 @@ fn main() {
                 .takes_value(true)
                 .required(false)
                 .help("Length of shared secret")
-                .value_parser(value_parser!(u64).range(0..=max_hex_len() as u64))
-                .default_value_if("b58", None, Some(&max_b58_len().to_string())) // b58 mode
-                .default_value(&max_hex_len().to_string()), // hex mode
+                .value_parser(value_parser!(u64).range(0..=max_hex_len() as u64)),
         )
         .arg(
             Arg::new("suffix")
@@ -117,6 +121,13 @@ fn main() {
                 .default_value(""),
         )
         .get_matches();
+
+    if args.value_of("out").unwrap() == "bip39"
+        && (args.value_of("suffix").unwrap() != "" || args.get_one::<u64>("length").is_some())
+    {
+        println!("Options --length and --suffix are not compatible with bip39 output");
+        std::process::exit(exitcode::DATAERR);
+    }
 
     let suffix = args.value_of("suffix").unwrap();
     if suffix.len() > 8 {
@@ -156,16 +167,25 @@ fn main() {
             );
 
             let shared_secret = create_shared_secret(seckey, pubkey);
-            let len = *args.get_one::<u64>("length").unwrap() as usize - suffix.len();
+
+            let len = match args.get_one::<u64>("length") {
+                None => match args.value_of("out").unwrap() {
+                    "hex" => max_hex_len(),
+                    "b58" => max_b58_len(),
+                    "bip39" => max_b58_len(),
+                    _ => panic!("invalid output type"),
+                },
+                Some(length) => *length as usize,
+            } - suffix.len();
 
             println!(
                 "shared secret: {}",
-                format_secret(shared_secret, args.is_present("b58"), len, suffix)
+                format_secret(shared_secret, args.value_of("out").unwrap(), len, suffix)
             );
 
             let shared_pubkey = compute_pubkey(shared_secret);
 
-            if args.is_present("b58") {
+            if args.value_of("out").unwrap() != "hex" {
                 println!(
                     "shared pubkey: {}{}",
                     bs58::encode(shared_pubkey.x.to_bytes()).into_string(),
@@ -215,12 +235,12 @@ mod tests {
 
     #[test]
     #[should_panic]
-    fn test_bad_suffix() {
+    fn test_bad_b58_suffix() {
         let (a_sec, _a_pub) = create_keypair();
         let (_b_sec, b_pub) = create_keypair();
         let shared_secret = create_shared_secret(a_sec, b_pub);
 
-        format_secret(shared_secret, true, 44, &"012345678");
+        format_secret(shared_secret, "b58", 44, &"012345678");
     }
 
     #[test]
@@ -230,7 +250,7 @@ mod tests {
         let (_b_sec, b_pub) = create_keypair();
         let shared_secret = create_shared_secret(a_sec, b_pub);
 
-        format_secret(shared_secret, true, 64, &"01234567");
+        format_secret(shared_secret, "b58", 64, &"01234567");
     }
 
     #[test]
@@ -240,7 +260,7 @@ mod tests {
         let (_b_sec, b_pub) = create_keypair();
         let shared_secret = create_shared_secret(a_sec, b_pub);
 
-        format_secret(shared_secret, false, 64, &"01234567");
+        format_secret(shared_secret, "hex", 64, &"01234567");
     }
 
     #[test]
@@ -249,7 +269,7 @@ mod tests {
         let (_b_sec, b_pub) = create_keypair();
         let shared_secret = create_shared_secret(a_sec, b_pub);
 
-        let sec = format_secret(shared_secret, false, 12, &"^%");
+        let sec = format_secret(shared_secret, "hex", 12, &"^%");
         assert!(sec.len() == 14);
     }
 
@@ -259,7 +279,7 @@ mod tests {
         let (_b_sec, b_pub) = create_keypair();
         let shared_secret = create_shared_secret(a_sec, b_pub);
 
-        let sec = format_secret(shared_secret, true, 12, &"#!@");
+        let sec = format_secret(shared_secret, "b58", 12, &"#!@");
         assert!(sec.len() == 15);
     }
 }
