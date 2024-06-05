@@ -1,11 +1,15 @@
 #![deny(missing_docs)]
 #![doc = include_str!("../README.md")]
 
+use std::str::FromStr;
+
 use ark_ec::{AffineCurve, ProjectiveCurve};
 use ark_ff::UniformRand;
 use clap::{value_parser, Arg, Command};
+use hmac::{Hmac, KeyInit, Mac};
 use mina_curves::pasta::Pallas as CurvePoint;
 use o1_utils::FieldHelpers;
+use sha3::{Digest, Sha3_256};
 
 type ScalarField = <CurvePoint as AffineCurve>::ScalarField;
 type BaseField = <CurvePoint as AffineCurve>::BaseField;
@@ -17,6 +21,20 @@ fn max_hex_len() -> usize {
 fn max_b58_len() -> usize {
     // max length of 32bytes encoded as base58
     (ScalarField::size_in_bytes() as f32 * 8.0 / 58f32.log2()).ceil() as usize
+}
+
+fn max_bip39_len() -> usize {
+    // refrigerator x 24 + 23
+    311
+}
+
+fn max_len(mode: &str) -> usize {
+    match mode {
+        "hex" => max_hex_len(),
+        "b58" => max_b58_len(),
+        "bip39" => max_bip39_len(),
+        _ => panic!("Invalid mode"),
+    }
 }
 
 fn compute_pubkey(seckey: ScalarField) -> CurvePoint {
@@ -33,34 +51,101 @@ fn create_keypair() -> (ScalarField, CurvePoint) {
 
 fn create_shared_secret(a_seckey: ScalarField, b_pubkey: CurvePoint) -> ScalarField {
     let curve_point = b_pubkey.mul(a_seckey).into_affine();
-    ScalarField::from_bytes(&curve_point.x.to_bytes()).unwrap() // change of field (I promise it's OK)
+    ScalarField::from_bytes(&curve_point.x.to_bytes()).unwrap() // Change of field (I promise it's OK)
 }
 
-enum KeyFormat {
-    Hex,
-    B58,
-    Bip39,
+fn create_hd_secret(seckey: ScalarField, id: &str) -> ScalarField {
+    let mut hmac = Hmac::<Sha3_256>::new_from_slice(&seckey.to_bytes()[..]).unwrap();
+    hmac.update(id.as_bytes());
+    let binding = hmac.finalize().clone();
+    let mut bytes = [0; 32];
+    bytes.copy_from_slice(binding.as_bytes());
+    bytes[bytes.len() - 1] &= 0b0011_1111; // Convert to scalar field element
+                                           // Note: Truncating like this creates an
+                                           // insignificant amount of bias and is
+                                           // simpler than reduction modulo p
+    ScalarField::from_bytes(&bytes).unwrap()
 }
 
-fn format_secret(shared_secret: ScalarField, out: &str, len: usize, suffix: &str) -> String {
-    assert!(suffix.len() <= 8);
+fn format_bytes(bytes: &[u8], mode: &str) -> String {
+    match mode {
+        "b58" => bs58::encode(bytes).into_string(),
+        "hex" => hex::encode(bytes),
+        "bip39" => bip39::Mnemonic::from_entropy(&bytes).unwrap().to_string(),
+        _ => panic!("Invalid mode"),
+    }
+}
 
-    let max_len = if out == "b58" {
-        max_b58_len()
-    } else {
-        max_hex_len()
-    };
-    if len + suffix.len() > max_len {
-        panic!("Maximum length possible is {}", max_len - suffix.len());
+fn format_secret(
+    secret: ScalarField,
+    mode: &str,
+    length: Option<u64>,
+    suffix: Option<&str>,
+) -> String {
+    let secret_str = format_bytes(&secret.to_bytes(), mode);
+    let suffix = suffix.unwrap_or("");
+    if secret_str.len() < 4 * suffix.len() {
+        panic!("Secret should be at least 4 times longer than suffix");
     }
 
-    match out {
-        "b58" => bs58::encode(&shared_secret.to_bytes()).into_string()[..len].to_string() + suffix,
-        "hex" => hex::encode(shared_secret.to_bytes())[..len].to_string() + suffix,
-        "bip39" => bip39::Mnemonic::from_entropy(&shared_secret.to_bytes())
-            .unwrap()
-            .to_string(),
-        _ => panic!("invalid output type"),
+    let length = length.unwrap_or((secret_str.len() - suffix.len()) as u64) as usize;
+    if length > secret_str.len() {
+        panic!("Length can be at most {}", secret_str.len());
+    }
+
+    if length + suffix.len() > max_len(mode) {
+        panic!(
+            "Maximum length possible is {}",
+            max_len(mode) - suffix.len()
+        );
+    }
+
+    secret_str[..length].to_string() + suffix
+}
+
+fn format_pubkey(pubkey: CurvePoint, mode: &str) -> String {
+    format_bytes(
+        &pubkey
+            .x
+            .to_bytes()
+            .into_iter()
+            .chain(pubkey.y.to_bytes().into_iter())
+            .collect::<Vec<u8>>(),
+        mode,
+    )
+}
+
+fn format_checksum(pubkey: CurvePoint, mode: &str) -> String {
+    let mut hasher = Sha3_256::new();
+    hasher.update(
+        &pubkey
+            .x
+            .to_bytes()
+            .into_iter()
+            .chain(pubkey.y.to_bytes().into_iter())
+            .collect::<Vec<u8>>(),
+    );
+    format_bytes(&hasher.finalize()[0..4], mode)
+}
+
+fn read_seckey(sec: &str) -> ScalarField {
+    let mut mode = "";
+    if sec.chars().all(|c| c.is_digit(16)) {
+        mode = "hex";
+    }
+    if sec.chars().all(|c| "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz".contains(c)) {
+        mode = "b58";
+    }
+    let mnemonic : Vec<&str> = sec.split_whitespace().collect();
+    if mnemonic.iter().all(|w| bip39::Language::English.word_list().contains(&w)) {
+        mode = "bip39";
+    }
+
+    match mode {
+        "hex" => ScalarField::from_hex(sec).unwrap(),
+        "b58" => ScalarField::from_bytes(&bs58::decode(sec).into_vec().unwrap()[..]).unwrap(),
+        "bip39" => ScalarField::from_bytes(&bip39::Mnemonic::from_str(sec).unwrap().to_entropy()).unwrap(),
+        _ => panic!("Invalid mode"),
     }
 }
 
@@ -70,13 +155,21 @@ fn main() {
         .author("Joseph Spadavecchia <joseph@redtrie.com>")
         .about("Diffie–Hellman key exchange")
         .arg(
+            Arg::new("command")
+                .takes_value(true)
+                .required(true)
+                .help("Command")
+                .possible_values(["keypair", "pubkey", "shared-secret", "hd-secret"]),
+        )
+        .arg(
             Arg::new("mode")
                 .short('m')
                 .long("mode")
                 .takes_value(true)
-                .required(true)
-                .help("Mode of operation")
-                .possible_values(["keypair", "shared-secret"]),
+                .required(false)
+                .help("Output mode")
+                .possible_values(["hex", "b58", "bip39"])
+                .default_value("hex"),
         )
         .arg(
             Arg::new("sec")
@@ -93,14 +186,12 @@ fn main() {
                 .help("Public key"),
         )
         .arg(
-            Arg::new("out")
-                .short('o')
-                .long("out")
+            Arg::new("id")
+                .short('i')
+                .long("id")
                 .takes_value(true)
                 .required(false)
-                .help("b58 output for shared secret")
-                .possible_values(["hex", "b58", "bip39"])
-                .default_value("hex"),
+                .help("Unique identifier"),
         )
         .arg(
             Arg::new("length")
@@ -117,42 +208,120 @@ fn main() {
                 .long("suffix")
                 .takes_value(true)
                 .required(false)
-                .help("Suffix string")
-                .default_value(""),
+                .help("Suffix string"),
         )
         .get_matches();
 
-    if args.value_of("out").unwrap() == "bip39"
-        && (args.value_of("suffix").unwrap() != "" || args.get_one::<u64>("length").is_some())
-    {
-        println!("Options --length and --suffix are not compatible with bip39 output");
-        std::process::exit(exitcode::DATAERR);
-    }
+    let mode = args.value_of("mode").unwrap();
 
-    let suffix = args.value_of("suffix").unwrap();
-    if suffix.len() > 8 {
-        println!("Suffix can be at most length 8");
-        std::process::exit(exitcode::DATAERR);
-    }
-
-    match args.value_of("mode") {
-        Some("keypair") => {
-            let (seckey, pubkey) = create_keypair();
-
-            println!("sec: {}", seckey.to_hex());
-            println!(
-                "pub: {}{}",
-                hex::encode(pubkey.x.to_bytes()),
-                hex::encode(pubkey.y.to_bytes())
-            );
+    let suffix = args.get_one::<&str>("suffix").cloned();
+    if let Some(suffix) = suffix {
+        if suffix.len() > 8 {
+            println!("Suffix can be at most length 8");
+            std::process::exit(exitcode::DATAERR);
         }
-        Some("shared-secret") => {
-            if !args.is_present("pub") || !args.is_present("sec") {
-                println!("Missing required --pub and --sec arguments");
+    }
+
+    let length = args.get_one::<u64>("length").cloned();
+
+    match args.value_of("command") {
+        Some("pubkey") => {
+            if !args.is_present("sec") {
+                println!("Missing required --sec argument");
                 std::process::exit(exitcode::DATAERR);
             }
 
-            let seckey = ScalarField::from_hex(args.value_of("sec").unwrap()).unwrap();
+            if args.is_present("pub") {
+                println!("Invalid option --pub");
+                std::process::exit(exitcode::DATAERR);
+            }
+
+            if args.get_one::<u64>("length").is_some() {
+                println!("Invalid option --length");
+                std::process::exit(exitcode::DATAERR);
+            }
+
+            if args.is_present("suffix") {
+                println!("Invalid option --suffix");
+                std::process::exit(exitcode::DATAERR);
+            }
+
+            if args.get_one::<u64>("id").is_some() {
+                println!("Invalid option --id");
+                std::process::exit(exitcode::DATAERR);
+            }
+
+            if mode == "bip39" {
+                println!("Cannot output pubkey with --mode bip39");
+                std::process::exit(exitcode::DATAERR);
+            }
+
+            let seckey = read_seckey(args.value_of("sec").unwrap());
+            let pubkey = compute_pubkey(seckey);
+
+            println!("Pubkey: {}", format_pubkey(pubkey, mode));
+        }
+        Some("keypair") => {
+            if args.get_one::<u64>("sec").is_some() {
+                println!("Invalid option --sec");
+                std::process::exit(exitcode::DATAERR);
+            }
+
+            if args.is_present("pub") {
+                println!("Invalid option --pub");
+                std::process::exit(exitcode::DATAERR);
+            }
+
+            if args.get_one::<u64>("id").is_some() {
+                println!("Invalid option --id");
+                std::process::exit(exitcode::DATAERR);
+            }
+
+            if args.get_one::<u64>("length").is_some() {
+                println!("Invalid option --length");
+                std::process::exit(exitcode::DATAERR);
+            }
+
+            if args.is_present("suffix") {
+                println!("Invalid option --suffix");
+                std::process::exit(exitcode::DATAERR);
+            }
+
+            let (seckey, pubkey) = create_keypair();
+
+            println!("Seckey: {}", format_secret(seckey, mode, None, None));
+            println!(
+                "Pubkey: {}",
+                format_pubkey(pubkey, if mode == "bip39" { "b58" } else { mode })
+            );
+        }
+        Some("shared-secret") => {
+            if !args.is_present("pub") {
+                println!("Missing required --pub argument");
+                std::process::exit(exitcode::DATAERR);
+            }
+
+            if !args.is_present("sec") {
+                println!("Missing required --sec argument");
+                std::process::exit(exitcode::DATAERR);
+            }
+
+            if args.is_present("id") {
+                println!("Invalid option --id");
+                std::process::exit(exitcode::DATAERR);
+            }
+
+            if length.is_some() {
+                println!("Invalid option --length");
+                std::process::exit(exitcode::DATAERR);
+            }
+
+            if suffix.is_some() {
+                println!("Invalid option --suffix");
+                std::process::exit(exitcode::DATAERR);
+            }
+
+            let seckey = read_seckey(args.value_of("sec").unwrap());
 
             let pubkey_hex = args.value_of("pub").unwrap();
             if pubkey_hex.len() != max_hex_len() * 2 {
@@ -168,52 +337,80 @@ fn main() {
 
             let shared_secret = create_shared_secret(seckey, pubkey);
 
-            let len = match args.get_one::<u64>("length") {
-                None => match args.value_of("out").unwrap() {
-                    "hex" => max_hex_len(),
-                    "b58" => max_b58_len(),
-                    "bip39" => max_b58_len(),
-                    _ => panic!("invalid output type"),
-                },
-                Some(length) => *length as usize,
-            } - suffix.len();
-
             println!(
-                "shared secret: {}",
-                format_secret(shared_secret, args.value_of("out").unwrap(), len, suffix)
+                "Shared secret: {}",
+                format_secret(shared_secret, mode, None, None)
             );
 
             let shared_pubkey = compute_pubkey(shared_secret);
 
-            if args.value_of("out").unwrap() != "hex" {
-                println!(
-                    "shared pubkey: {}{}",
-                    bs58::encode(shared_pubkey.x.to_bytes()).into_string(),
-                    bs58::encode(shared_pubkey.y.to_bytes()).into_string()
-                );
-            } else {
-                println!(
-                    "shared pubkey: {}{}",
-                    hex::encode(shared_pubkey.x.to_bytes()),
-                    hex::encode(shared_pubkey.y.to_bytes())
-                );
-            }
+            println!(
+                "Checksum:      {}",
+                format_checksum(shared_pubkey, if mode == "bip39" { "b58" } else { mode })
+            );
         }
-        Some(&_) => panic!("Invalid mode"),
-        None => panic!("Missing mode"),
+        Some("hd-secret") => {
+            if !args.is_present("sec") {
+                println!("Missing required --sec argument");
+                std::process::exit(exitcode::DATAERR);
+            }
+
+            if args.is_present("pub") {
+                println!("Invalid option --pub");
+                std::process::exit(exitcode::DATAERR);
+            }
+
+            let seckey = read_seckey(args.value_of("sec").unwrap());
+
+            if !args.is_present("id") {
+                println!("Missing required --id argument");
+                std::process::exit(exitcode::DATAERR);
+            }
+
+            if mode == "bip39" && (suffix.is_some() || length.is_some()) {
+                println!("Options --length and --suffix are not compatible with bip39 output");
+                std::process::exit(exitcode::DATAERR);
+            }
+
+            let id = args.value_of("id").unwrap();
+
+            let hd_secret = create_hd_secret(seckey, id);
+
+            println!(
+                "HD secret: {}",
+                format_secret(hd_secret, mode, length, suffix)
+            );
+
+            let hd_pubkey = compute_pubkey(hd_secret);
+
+            print!("Params:    --id {}", id);
+            if let Some(length) = length {
+                print!(" --length {}", length)
+            }
+            if let Some(suffix) = suffix {
+                print!(" --suffix {}", suffix)
+            }
+            println!(" --mode {}", mode);
+            println!(
+                "Checksum:  {}",
+                format_checksum(hd_pubkey, if mode == "bip39" { "b58" } else { mode })
+            );
+        }
+        Some(&_) => panic!("Invalid command"),
+        None => panic!("Missing command"),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::{create_keypair, create_shared_secret, format_secret};
+
     use std::ops::Add;
 
     #[test]
     fn test_ok_shared_secret() {
         let (a_sec, a_pub) = create_keypair();
         let (b_sec, b_pub) = create_keypair();
-
         let a_secret = create_shared_secret(a_sec, b_pub);
         let b_secret = create_shared_secret(b_sec, a_pub);
 
@@ -224,7 +421,6 @@ mod tests {
     fn test_bad_shared_secret() {
         let (a_sec, a_pub) = create_keypair();
         let (b_sec, b_pub) = create_keypair();
-
         let b_pub2 = b_pub.add(a_pub);
 
         let a_secret = create_shared_secret(a_sec, b_pub2);
@@ -240,7 +436,7 @@ mod tests {
         let (_b_sec, b_pub) = create_keypair();
         let shared_secret = create_shared_secret(a_sec, b_pub);
 
-        format_secret(shared_secret, "b58", 44, &"012345678");
+        format_secret(shared_secret, "b58", Some(44), Some("012345678"));
     }
 
     #[test]
@@ -250,7 +446,7 @@ mod tests {
         let (_b_sec, b_pub) = create_keypair();
         let shared_secret = create_shared_secret(a_sec, b_pub);
 
-        format_secret(shared_secret, "b58", 64, &"01234567");
+        format_secret(shared_secret, "b58", Some(64), Some("01234567"));
     }
 
     #[test]
@@ -260,7 +456,7 @@ mod tests {
         let (_b_sec, b_pub) = create_keypair();
         let shared_secret = create_shared_secret(a_sec, b_pub);
 
-        format_secret(shared_secret, "hex", 64, &"01234567");
+        format_secret(shared_secret, "hex", Some(64), Some("01234567"));
     }
 
     #[test]
@@ -269,7 +465,7 @@ mod tests {
         let (_b_sec, b_pub) = create_keypair();
         let shared_secret = create_shared_secret(a_sec, b_pub);
 
-        let sec = format_secret(shared_secret, "hex", 12, &"^%");
+        let sec = format_secret(shared_secret, "hex", Some(12), Some("^%"));
         assert!(sec.len() == 14);
     }
 
@@ -278,8 +474,7 @@ mod tests {
         let (a_sec, _a_pub) = create_keypair();
         let (_b_sec, b_pub) = create_keypair();
         let shared_secret = create_shared_secret(a_sec, b_pub);
-
-        let sec = format_secret(shared_secret, "b58", 12, &"#!@");
+        let sec = format_secret(shared_secret, "b58", Some(12), Some("#!@"));
         assert!(sec.len() == 15);
     }
 }
