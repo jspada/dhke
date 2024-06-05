@@ -214,7 +214,8 @@ fn main() {
 
     let mode = args.value_of("mode").unwrap();
 
-    let suffix = args.get_one::<&str>("suffix").cloned();
+    let suffix = args.get_one::<String>("suffix").cloned();
+    let suffix = suffix.as_deref();
     if let Some(suffix) = suffix {
         if suffix.len() > 8 {
             println!("Suffix can be at most length 8");
