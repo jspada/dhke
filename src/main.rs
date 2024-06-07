@@ -8,14 +8,23 @@ use ark_ff::UniformRand;
 use clap::{value_parser, Arg, Command};
 use hmac::{Hmac, KeyInit, Mac};
 use mina_curves::pasta::Pallas as CurvePoint;
+use num_bigint::BigUint;
 use o1_utils::FieldHelpers;
 use sha3::{Digest, Sha3_256};
 
 type ScalarField = <CurvePoint as AffineCurve>::ScalarField;
 type BaseField = <CurvePoint as AffineCurve>::BaseField;
 
+fn max_alpha_len() -> usize {
+    78
+}
+
+fn max_b10_len() -> usize {
+    78
+}
+
 fn max_hex_len() -> usize {
-    2 * ScalarField::size_in_bytes()
+    2 * ScalarField::size_in_bytes() + 2
 }
 
 fn max_b58_len() -> usize {
@@ -30,11 +39,39 @@ fn max_bip39_len() -> usize {
 
 fn max_len(mode: &str) -> usize {
     match mode {
+        "alpha" => max_alpha_len(),
+        "b10" => max_b10_len(),
         "hex" => max_hex_len(),
         "b58" => max_b58_len(),
         "bip39" => max_bip39_len(),
         _ => panic!("Invalid mode"),
     }
+}
+
+fn b10_to_alpha(b10: String) -> String {
+    b10.chars()
+        .map(|c| {
+            let digit = c.to_digit(10).unwrap();
+            let c = char::from_digit(digit + 10, 20).unwrap();
+            if digit % 2 == 1 {
+                c
+            } else {
+                c.to_uppercase().collect::<Vec<char>>()[0]
+            }
+        })
+        .collect()
+}
+
+fn alpha_to_b10(alpha: String) -> String {
+    alpha
+        .chars()
+        .map(|c| {
+            let digit = c.to_lowercase().collect::<Vec<char>>()[0]
+                .to_digit(20)
+                .unwrap();
+            char::from_digit(digit - 10, 10).unwrap()
+        })
+        .collect()
 }
 
 fn compute_pubkey(seckey: ScalarField) -> CurvePoint {
@@ -69,9 +106,14 @@ fn create_hd_secret(seckey: ScalarField, id: &str) -> ScalarField {
 
 fn format_bytes(bytes: &[u8], mode: &str) -> String {
     match mode {
+        "alpha" => format!(
+            "I{}",
+            b10_to_alpha(BigUint::from_bytes_le(bytes).to_string())
+        ),
+        "b10" => BigUint::from_bytes_le(bytes).to_string(),
         "b58" => bs58::encode(bytes).into_string(),
-        "hex" => hex::encode(bytes),
-        "bip39" => bip39::Mnemonic::from_entropy(&bytes).unwrap().to_string(),
+        "hex" => format!("0x{}", hex::encode(bytes)),
+        "bip39" => bip39::Mnemonic::from_entropy(bytes).unwrap().to_string(),
         _ => panic!("Invalid mode"),
     }
 }
@@ -109,43 +151,63 @@ fn format_pubkey(pubkey: CurvePoint, mode: &str) -> String {
             .x
             .to_bytes()
             .into_iter()
-            .chain(pubkey.y.to_bytes().into_iter())
+            .chain(pubkey.y.to_bytes())
             .collect::<Vec<u8>>(),
         mode,
     )
 }
 
-fn format_checksum(pubkey: CurvePoint, mode: &str) -> String {
+fn format_checksum(pubkey: CurvePoint) -> String {
     let mut hasher = Sha3_256::new();
     hasher.update(
         &pubkey
             .x
             .to_bytes()
             .into_iter()
-            .chain(pubkey.y.to_bytes().into_iter())
+            .chain(pubkey.y.to_bytes())
             .collect::<Vec<u8>>(),
     );
-    format_bytes(&hasher.finalize()[0..4], mode)
+    format_bytes(&hasher.finalize()[0..4], "b58")
 }
 
 fn read_seckey(sec: &str) -> ScalarField {
     let mut mode = "";
-    if sec.chars().all(|c| c.is_digit(16)) {
+    if sec.chars().all(|c| c.is_numeric()) {
+        mode = "b10";
+    }
+    if sec.len() > 1 && sec.starts_with('I') && sec.chars().all(|c| "AbCdEfGhIj".contains(c)) {
+        mode = "alpha";
+    }
+    if sec.len() > 2 && sec.starts_with("0x") && sec[2..].chars().all(|c| c.is_ascii_hexdigit()) {
         mode = "hex";
     }
-    if sec.chars().all(|c| "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz".contains(c)) {
+    if sec
+        .chars()
+        .all(|c| "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz".contains(c))
+    {
+        println!("b58");
         mode = "b58";
     }
-    let mnemonic : Vec<&str> = sec.split_whitespace().collect();
-    if mnemonic.iter().all(|w| bip39::Language::English.word_list().contains(&w)) {
+    let mnemonic: Vec<&str> = sec.split_whitespace().collect();
+    if mnemonic
+        .iter()
+        .all(|w| bip39::Language::English.word_list().contains(w))
+    {
         mode = "bip39";
     }
 
     match mode {
-        "hex" => ScalarField::from_hex(sec).unwrap(),
+        "alpha" => ScalarField::from_biguint(
+            &BigUint::from_str(&alpha_to_b10(sec[1..].to_string())).unwrap(),
+        )
+        .unwrap(),
+        "b10" => ScalarField::from_biguint(&BigUint::from_str(sec).unwrap()).unwrap(),
+        "hex" => ScalarField::from_hex(&sec[2..]).unwrap(),
         "b58" => ScalarField::from_bytes(&bs58::decode(sec).into_vec().unwrap()[..]).unwrap(),
-        "bip39" => ScalarField::from_bytes(&bip39::Mnemonic::from_str(sec).unwrap().to_entropy()).unwrap(),
-        _ => panic!("Invalid mode"),
+        "bip39" => {
+            ScalarField::from_bytes(&bip39::Mnemonic::from_str(sec).unwrap().to_entropy()).unwrap()
+        }
+        _ => panic!("Invalid secret format"),
     }
 }
 
@@ -168,8 +230,8 @@ fn main() {
                 .takes_value(true)
                 .required(false)
                 .help("Output mode")
-                .possible_values(["hex", "b58", "bip39"])
-                .default_value("hex"),
+                .possible_values(["hex", "alpha", "b10", "b58", "bip39"])
+                .default_value("b58"),
         )
         .arg(
             Arg::new("sec")
@@ -200,7 +262,7 @@ fn main() {
                 .takes_value(true)
                 .required(false)
                 .help("Length of shared secret")
-                .value_parser(value_parser!(u64).range(0..=max_hex_len() as u64)),
+                .value_parser(value_parser!(u64).range(0..=max_bip39_len() as u64)),
         )
         .arg(
             Arg::new("suffix")
@@ -325,13 +387,13 @@ fn main() {
             let seckey = read_seckey(args.value_of("sec").unwrap());
 
             let pubkey_hex = args.value_of("pub").unwrap();
-            if pubkey_hex.len() != max_hex_len() * 2 {
+            if pubkey_hex.len() != max_hex_len() * 2 - 2 {
                 println!("Invalid pub key");
                 std::process::exit(exitcode::DATAERR);
             }
 
             let pubkey = CurvePoint::new(
-                BaseField::from_hex(&pubkey_hex[0..max_hex_len()]).unwrap(),
+                BaseField::from_hex(&pubkey_hex[2..max_hex_len()]).unwrap(),
                 BaseField::from_hex(&pubkey_hex[max_hex_len()..]).unwrap(),
                 false,
             );
@@ -345,10 +407,7 @@ fn main() {
 
             let shared_pubkey = compute_pubkey(shared_secret);
 
-            println!(
-                "Checksum:      {}",
-                format_checksum(shared_pubkey, if mode == "bip39" { "b58" } else { mode })
-            );
+            println!("Checksum:      {}", format_checksum(shared_pubkey));
         }
         Some("hd-secret") => {
             if !args.is_present("sec") {
@@ -392,10 +451,7 @@ fn main() {
                 print!(" --suffix {}", suffix)
             }
             println!(" --mode {}", mode);
-            println!(
-                "Checksum:  {}",
-                format_checksum(hd_pubkey, if mode == "bip39" { "b58" } else { mode })
-            );
+            println!("Checksum:  {}", format_checksum(hd_pubkey));
         }
         Some(&_) => panic!("Invalid command"),
         None => panic!("Missing command"),
