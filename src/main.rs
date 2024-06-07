@@ -142,7 +142,7 @@ fn format_secret(
         );
     }
 
-    secret_str[..length].to_string() + suffix
+    secret_str[..length - suffix.len()].to_string() + suffix
 }
 
 fn format_pubkey(pubkey: CurvePoint, mode: &str) -> String {
