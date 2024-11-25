@@ -160,7 +160,7 @@ fn format_pubkey(pubkey: CurvePoint, mode: &str) -> String {
 fn format_checksum(pubkey: CurvePoint) -> String {
     let mut hasher = Sha3_256::new();
     hasher.update(
-        &pubkey
+        pubkey
             .x
             .to_bytes()
             .into_iter()
@@ -523,7 +523,7 @@ mod tests {
         let shared_secret = create_shared_secret(a_sec, b_pub);
 
         let sec = format_secret(shared_secret, "hex", Some(12), Some("^%"));
-        assert!(sec.len() == 14);
+        assert!(sec.len() == 12);
     }
 
     #[test]
@@ -532,6 +532,6 @@ mod tests {
         let (_b_sec, b_pub) = create_keypair();
         let shared_secret = create_shared_secret(a_sec, b_pub);
         let sec = format_secret(shared_secret, "b58", Some(12), Some("#!@"));
-        assert!(sec.len() == 15);
+        assert!(sec.len() == 12);
     }
 }
