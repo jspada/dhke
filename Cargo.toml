@@ -13,7 +13,7 @@ bs58 = "0.5.1"
 clap = "3.2.23"
 exitcode = "1.1.2"
 hex = "0.4"
-mina-curves = { git = "https://github.com/o1-labs/proof-systems.git", rev = "d38c1c8fe8341ac2dfdc9a3d46ac49276bc9801"}
+mina-curves = { git = "https://github.com/o1-labs/proof-systems.git", rev = "ed38c1c8fe8341ac2dfdc9a3d46ac49276bc9801" }
 rand = "0.8.0"
 o1-utils = { git = "https://github.com/o1-labs/proof-systems.git", rev = "ed38c1c8fe8341ac2dfdc9a3d46ac49276bc9801" }
 sha3 = "0.11.0-pre.4"
